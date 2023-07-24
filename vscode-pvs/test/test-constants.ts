@@ -1047,7 +1047,7 @@ export const prf: string[] = [
 
 export const find_declaration_result: pvsgui.FindDeclarationResult =
     [ { declname: 'sqrt',
-	'type': '[nnx: nonneg_real -> {nnz | nnz * nnz = nnx}]',
+	'type': 'function',
 	theoryid: 'sqrt',
 	filename: 'sqrt.pvs',
 	place: [ 23, 2, 23, 34 ],

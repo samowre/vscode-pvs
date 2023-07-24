@@ -55,10 +55,8 @@ import * as languageUtils from '../common/languageUtils';
 import * as fsUtils from '../common/fsUtils';
 import { PvsResponse } from '../common/pvs-gui';
 import { 
-	CheckParResult,
 	isEmptyCommand, isFailCommand, isInvalidCommand, isPostponeCommand, isProofliteGlassbox, 
 	isQEDCommand, isQuitCommand, isQuitDontSaveCommand, isSameCommand, isSaveThenQuitCommand, 
-	isShowExpandedSequentCommand, 
 	isShowHiddenFormulas, isUndoCommand, isUndoUndoCommand, isUndoUndoPlusCommand, splitCommands
 } from '../common/languageUtils';
 import { Connection } from 'vscode-languageserver';
@@ -90,7 +88,6 @@ export class PvsProofExplorer {
 	protected tmpLogFileName: string;
 
 	protected dirtyFlag: boolean = false; // indicates whether the proof has changed since the last time it was saved
-	protected qedNotificationSent: boolean = false; // whether the QED notification has been send to the client
 
 	protected connection: Connection; // connection to the client
 	protected pvsProxy: PvsProxy;
@@ -223,6 +220,8 @@ export class PvsProofExplorer {
 		};
 		this.connection.sendNotification(serverEvent.proverEvent, evt);
 	}
+
+
 	/**
 	 * Internal function, moves the active node one position back in the proof tree.
 	 */
@@ -416,99 +415,99 @@ export class PvsProofExplorer {
 	 * The function is activated when the user clicks forward/back/play on the front-end.
 	 * The command is taken from the proof tree.
 	 * The command can also be specified as function argument -- this is useful for handling commands entered by the used at the prover prompt. 
-	 * @param opt.cmd Optional parameter, specifies the command to be executed.
+	 * @param cmd Optional parameter, specifying the command to be executed.
 	 */
-	async step (opt?: { cmd?: string, feedbackToTerminal?: boolean }): Promise<PvsResponse> {
-		opt = opt || {};
-		// return new Promise (async (resolve, reject) => {
-
-			if (this.stopAt && this.activeNode && this.stopAt.id === this.activeNode.id) {
-				this.stopAt = null;
-				this.runningFlag = false;
-				if (this.connection) {
-					const evt: ProofExecDidStopRunning = {
-						action: "did-stop-running",
-						sequent: this.proofState
-					};
-					this.connection.sendNotification(serverEvent.proverEvent, evt);
-				}
-				return null;
-			}
-
-			const cmd: string = (opt.cmd) ? opt.cmd : 
-					(this.activeNode?.contextValue === "proof-command" && (this.ghostNode && !this.ghostNode.isActive())) ?
-						this.activeNode?.name 
-							: null;
-			if (cmd) {
-				if (this.runningFlag && !this.autorunFlag && isPostponeCommand(cmd)) {
-					if (this.stopAt) {
-						if (this.stopAt === this.activeNode) {
-							// stop the proof at the first postpone when running the proof in proof explorer, except if this is a re-run triggered by M-x prt or M-x pri (autorunFlag)
-							this.runningFlag = false;
-							return null;
-						}
-					} else {
-						this.stopAt = this.activeNode;
-					}
-				}
-				if (opt.feedbackToTerminal && !this.autorunFlag) {
-					// const channelID: string = desc2id(this.formula);
-					// const evt: CliGatewayPrintProofCommand = { type: "pvs.event.print-proof-command", channelID, data: { cmd } };
-					// this.pvsLanguageServer.cliGateway.publish(evt);
-				}
-				const command: PvsProofCommand = {
-					fileName: this.formula.fileName,
-					fileExtension: this.formula.fileExtension,
-					theoryName: this.formula.theoryName,
-					formulaName: this.formula.formulaName,
-					contextFolder: this.formula.contextFolder,
-					cmd: cmd.startsWith("(") ? cmd : `(${cmd})`
-				};
-				// console.dir(command, { depth: null });
-				const response: PvsResponse = await this.proofCommand(command);
-				if (this.interruptFlag) {
-					this.interruptFlag = false;
-					if (this.autorunFlag) {
-						this.runningFlag = false;
-						this.stopAt = null;			
-						await this.quitProof();
-						return null;
-					}
-					// else -- keep processing the response as usual
-				}
-				// console.dir(response, { depth: null });
-				if (response?.result?.length) {
-					for (let i = 0; i < response.result.length; i++) {
-						const proofState: SequentDescriptor = response.result[i]; // process proof commands
-						await this.onStepExecutedNew({ proofState, args: command, lastSequent: i === response.result.length - 1 }, opt);
-					}
-					// if a proof is running, then iterate
-					if (this.runningFlag && !this.ghostNode.isActive()) {
-						await this.step(opt);
-					}
-				}
-				return response;
-			}
-			if (this.autorunFlag) {
-				this.runningFlag = false;
-				this.stopAt = null;	
-				// mark proof as unfinished
-				if (this.root.getProofStatus() !== "untried") {
-					this.root.setProofStatus("unfinished");
-				}
-				// quit proof and update proof status in the jprf file
-				await this.quitProofAndSave({ jprfOnly: true });
-				// await this.quitProof();
-				return null;
-			}
+    async step (opt?: { proofId?: string, cmd?: string, feedbackToTerminal?: boolean }): Promise<PvsResponse | null> {
+	opt = opt || {};
+	// return new Promise (async (resolve, reject) => {
+	if (this.stopAt && this.activeNode && this.stopAt.id === this.activeNode.id) {
+	    this.stopAt = null;
+	    this.runningFlag = false;
+	    if (this.connection) {
+		const evt: ProofExecDidStopRunning = {
+		    action: "did-stop-running"
+		};
+		this.connection.sendNotification(serverEvent.proverEvent, evt);
+	    }
+	    return null;
+	}
+	
+	const cmd: string = (opt.cmd) ? opt.cmd : 
+	    (this.activeNode?.contextValue === "proof-command" && (this.ghostNode && !this.ghostNode.isActive())) ?
+	    this.activeNode?.name 
+	    : null;
+	const proofId: string = (opt.proofId) ? opt.proofId : null;
+	if (cmd) {
+	    if (this.runningFlag && !this.autorunFlag && isPostponeCommand(cmd)) {
+		if (this.stopAt) {
+		    if (this.stopAt === this.activeNode) {
+			// stop the proof at the first postpone when running the proof in proof explorer, except if this is a re-run triggered by M-x prt or M-x pri (autorunFlag)
+			this.runningFlag = false;
 			return null;
-		// });
-	}
-	protected restoreTreeAttributes (): void {
-		if (this.root) {
-			this.root.restoreTreeAttributes();
+		    }
+		} else {
+		    this.stopAt = this.activeNode;
 		}
+	    }
+	    if (opt.feedbackToTerminal && !this.autorunFlag) {
+		// const channelID: string = desc2id(this.formula);
+		// const evt: CliGatewayPrintProofCommand = { type: "pvs.event.print-proof-command", channelID, data: { cmd } };
+		// this.pvsLanguageServer.cliGateway.publish(evt);
+	    }
+	    const command: PvsProofCommand = {
+		fileName: this.formula.fileName,
+		fileExtension: this.formula.fileExtension,
+		theoryName: this.formula.theoryName,
+		formulaName: this.formula.formulaName,
+		contextFolder: this.formula.contextFolder,
+		cmd: cmd.startsWith("(") ? cmd : `(${cmd})`
+	    };
+	    // console.dir(command, { depth: null });
+	    const response: PvsResponse =
+		await this.pvsProxy.proofCommand({proofId: proofId, cmd: cmd});
+	    if (this.interruptFlag) {
+		this.interruptFlag = false;
+		if (this.autorunFlag) {
+		    this.runningFlag = false;
+		    this.stopAt = null;			
+		    await this.quitProof();
+		    return null;
+		}
+		// else -- keep processing the response as usual
+	    }
+	    // console.dir(response, { depth: null });
+	    if (response?.result?.length) {
+		for (let i = 0; i < response.result.length; i++) {
+		    const proofState: SequentDescriptor = response.result[i]; // process proof commands
+		    await this.onStepExecutedNew({ proofState, args: command, lastSequent: i === response.result.length - 1 }, opt);
+		}
+		// if a proof is running, then iterate
+		if (this.runningFlag && !this.ghostNode.isActive()) {
+		    await this.step(opt);
+		}
+	    }
+	    return response;
 	}
+	if (this.autorunFlag) {
+	    this.runningFlag = false;
+	    this.stopAt = null;	
+	    // mark proof as unfinished
+	    if (this.root.getProofStatus() !== "untried") {
+		this.root.setProofStatus("unfinished");
+	    }
+	    // quit proof and update proof status in the jprf file
+	    await this.quitProofAndSave({ jprfOnly: true });
+	    // await this.quitProof();
+	    return null;
+	}
+	return null;
+	// });
+    }
+    protected restoreTreeAttributes (): void {
+	if (this.root) {
+	    this.root.restoreTreeAttributes();
+	}
+    }
 	protected saveTreeAttributes (): void {
 		if (this.root) {
 			this.root.saveTreeAttributes();
@@ -551,8 +550,7 @@ export class PvsProofExplorer {
 		this.rewindingFlag = false;
 		if (this.connection) {
 			const evt: ProofExecDidStopRunning = {
-				action: "did-stop-running",
-				sequent: this.proofState
+				action: "did-stop-running"
 			};
 			this.connection.sendNotification(serverEvent.proverEvent, evt);
 		}
@@ -753,28 +751,15 @@ export class PvsProofExplorer {
 					return;
 				}
 
-				// handle (show-hidden) and other similar commands that are not directly supported by the server and need to be by-passed
+				// handle (show-hidden) and (comment "xxx")
 				if (isShowHiddenFormulas(userCmd)) {
 					// nothing to do, the prover will simply show the hidden formulas
 					return;
 				}
 
-				if (isShowExpandedSequentCommand(userCmd)) {
-					// nothing to do, the prover will simply show the expanded sequent
-					return;
-				}
-
 				if (languageUtils.isHelpCommand(userCmd) || languageUtils.isHelpBangCommand(userCmd)) {
 					// do nothing, CLI will show the help message
-				}
-
-				// sanity check for parens, pvs sometimes does not report problems and this confuses proof explorer
-				// this condition should never be triggered because the same sanity check is also in vscodePvsXTerm that
-				// prevents the submission of commands with unbalanced parens to the prover
-				const parens: CheckParResult = languageUtils.checkPar(userCmd, { includeStringContent: true });
-				if (!parens?.success) {
-					// report unbalanced parens to the user
-					this.proofState.commentary = parens.msg;
+					// return;
 				}
 
 				//--- check special conditions: empty/null command, invalid command, no change before proceeding
@@ -933,10 +918,7 @@ export class PvsProofExplorer {
 					await this.quitProofAndSave({ jprfOnly: true });
 				} else {
 					if (this.connection) {
-						const evt: ProofExecDidStopRunning = {
-							action: "did-stop-running",
-							sequent: this.proofState
-						};
+						const evt: ProofExecDidStopRunning = { action: "did-stop-running" };
 						this.connection.sendNotification(serverEvent.proverEvent, evt);
 					}
 				}
@@ -945,10 +927,7 @@ export class PvsProofExplorer {
 			this.runningFlag = false;
 			console.error("[proof-explorer] Error: could not read proof state information returned by pvs-server.");
 			if (this.connection) {
-				const evt: ProofExecDidStopRunning = {
-					action: "did-stop-running",
-					sequent: this.proofState
-				};
+				const evt: ProofExecDidStopRunning = { action: "did-stop-running" };
 				this.connection.sendNotification(serverEvent.proverEvent, evt);
 			}
 		}
@@ -1251,7 +1230,7 @@ export class PvsProofExplorer {
 						let found: boolean = false;
 						for (let i = 0; i < selectedNode.children.length && !found; i++) {
 							if (selectedNode.children[i].branchId !== branchId) {
-								found = true;
+								found = true
 							} else {
 								branchId = languageUtils.makeBranchId({ branchId: selectedNode.branchId, goalId: firstGoal + i + 1 });
 							}
@@ -1261,9 +1240,9 @@ export class PvsProofExplorer {
 							newBranch.updateSequent(opt.proofState, { internalAction: this.autorunFlag });
 						}
 					}
-					// if (newBranch) {
-					selectedNode.appendChild(newBranch);
-					// }
+					if (newBranch) {
+						selectedNode.appendChild(newBranch);
+					}
 					break;
 				}
 				case "root":
@@ -1274,37 +1253,37 @@ export class PvsProofExplorer {
 							const branchName: string = (opt.beforeSelected) ? `` : `${branchId}.${parent.children.length}`;
 							newBranch = new ProofBranch(branchName, branchId, parent, this.connection);
 						}
-						// if (newBranch) {
-						newBranch.parent = parent;
-						const children: ProofItem[] = [];
-						const n: number = parent.children.length;
-						let position: number = 0;
-						for (let i = 0; i < n; i++) {
-							if (!opt.beforeSelected) {
-								children.push(parent.children[i]);
+						if (newBranch) {
+							newBranch.parent = parent;
+							const children: ProofItem[] = [];
+							const n: number = parent.children.length;
+							let position: number = 0;
+							for (let i = 0; i < n; i++) {
+								if (!opt.beforeSelected) {
+									children.push(parent.children[i]);
+								}
+								if (parent.children[i].id === selectedNode.id) {
+									children.push(newBranch);
+									position = i;
+								}
+								if (opt.beforeSelected) {
+									children.push(parent.children[i]);
+								}
 							}
-							if (parent.children[i].id === selectedNode.id) {
-								children.push(newBranch);
-								position = i;
-							}
-							if (opt.beforeSelected) {
-								children.push(parent.children[i]);
-							}
+							parent.children = children;
+							if (!opt.internalAction && this.connection) {
+								const elem: ProofNodeX = newBranch.getNodeXStructure();
+								this.log(`[proof-explorer] Appending branch ${elem.name} (${elem.id})`);
+								const evt: ProofEditDidAppendNode = {
+									action: "did-append-node",
+									elem,
+									position
+								};
+								if (this.connection) {
+									this.connection.sendNotification(serverEvent.proverEvent, evt);
+								}
+							}					
 						}
-						parent.children = children;
-						if (!opt.internalAction && this.connection) {
-							const elem: ProofNodeX = newBranch.getNodeXStructure();
-							this.log(`[proof-explorer] Appending branch ${elem.name} (${elem.id})`);
-							const evt: ProofEditDidAppendNode = {
-								action: "did-append-node",
-								elem,
-								position
-							};
-							if (this.connection) {
-								this.connection.sendNotification(serverEvent.proverEvent, evt);
-							}
-						}					
-						// }
 					}
 				}
 				default: {
@@ -1973,11 +1952,11 @@ export class PvsProofExplorer {
 		// set QED
 		this.root.QED();
 		// save proof if status has changed
-		// const fname: string = fsUtils.desc2fname({
-		// 	fileName: this.formula.theoryName,
-		// 	fileExtension: ".prf",
-		// 	contextFolder: this.formula.contextFolder
-		// });
+		const fname: string = fsUtils.desc2fname({
+			fileName: this.formula.theoryName,
+			fileExtension: ".prf",
+			contextFolder: this.formula.contextFolder
+		});
 		// const proofliteExists: boolean = await utils.containsProoflite(fname, this.formula.formulaName);
 		if (this.root.proofStatusChanged() || this.dirtyFlag || this.origin !== ".prf") { // || !proofliteExists) {
 			await this.quitProofAndSave(); // proof descriptor is automatically updated by saveproof
@@ -1997,7 +1976,6 @@ export class PvsProofExplorer {
 			theoryName: this.formula.theoryName,
 			formulaName: this.formula.formulaName,
 			contextFolder: this.formula.contextFolder,
-			line: this.formula.line,
 			cmd: "Q.E.D."
 		});
 
@@ -2036,7 +2014,6 @@ export class PvsProofExplorer {
 					this.connection.sendRequest(serverEvent.serverModeUpdateEvent, { mode: "lisp" });
 				}
 			};
-			this.qedNotificationSent = false;
 
 			this.root.updateSequent(this.initialProofState, { internalAction: this.autorunFlag });
 			this.root.pending();
@@ -2340,7 +2317,7 @@ export class PvsProofExplorer {
 				fileName: this.formula.fileName,
 				fileExtension: desc.fileExtension,
 				contextFolder: this.formula.contextFolder
-			};
+			}
 			let success: boolean = false;
 			let msg: string = null;
 			switch (desc.fileExtension) {
@@ -2394,15 +2371,14 @@ export class PvsProofExplorer {
 				}
 			}
 			const script: string = this.copyTree({ selected: this.root });
-			const response: SaveProofResponse = { 
-				success,
-				proofFile,
-				msg,
-				formula: this.formula,
-				script
-			};
-			this.connection.sendNotification(serverRequest.saveProof, { 
-				response, 
+			this.connection.sendRequest(serverRequest.saveProof, { 
+				response: { 
+					success,
+					proofFile,
+					msg,
+					formula: this.formula,
+					script
+				}, 
 				args: this.formula 
 			});
 		} else {
@@ -2418,7 +2394,7 @@ export class PvsProofExplorer {
 			fileName: this.formula.fileName,
 			fileExtension: ".prf",
 			contextFolder: this.formula.contextFolder,
-		};
+		}
 		// update proof descriptor so it reflects the current proof structure
 		this.proofDescriptor = this.makeProofDescriptor(this.origin);
 		await saveProofDescriptor(this.formula, this.proofDescriptor, { saveProofTree: true });
@@ -2465,50 +2441,42 @@ export class PvsProofExplorer {
 	 * Quit the current proof
 	 * @param opt Optionals: whether confirmation is necessary before quitting (default: confirmation is needed)  
 	 */
-	async quitProof (opt?: { notifyClient?: boolean }): Promise<PvsResponse> {
-		opt = opt || {};
-		this.runningFlag = false;
+    async quitProof (opt?: { proofId?: string, notifyClient?: boolean }): Promise<void> {
+	opt = opt || {};
+	this.runningFlag = false;
 
-		// interrupt proof commands if necessary
-		let res: PvsResponse = await this.pvsProxy.interruptProver();
+	// interrupt proof commands if necessary
+	let res: PvsResponse = await this.pvsProxy.interruptProver();
 
-		const inchecker: boolean = await this.inChecker();
-		if (this.formula && inchecker) {
-			res = await this.proofCommand({
-				fileName: this.formula.fileName,
-				fileExtension: this.formula.fileExtension,
-				theoryName: this.formula.theoryName,
-				formulaName: this.formula.formulaName,
-				contextFolder: this.formula.contextFolder,
-				cmd: "quit"
-			});
-			// reset dirty flag --- the proof is over
-			this.updateDirtyFlag(false);
-		}
-		if (this.autorunFlag) {
-			const status: ProofStatus = (this.root) ? this.root.getProofStatus() : "untried";
-			this.autorunFlag = false;
-			this.autorunCallback(status);
-		}
-		if (opt.notifyClient) {
-			const req: PvsProofCommand = {
-				...this.formula,
-				cmd: "quit"
-			};
-			const ans: ProofCommandResponse = { res: "bye!", req };
-			this.connection?.sendRequest(serverEvent.proofCommandResponse, ans);
-
-			if (!this.autorunFlag) {
-				const evt: ProofExecDidQuitProof = { action: "did-quit-proof" };
-				this.connection?.sendNotification(serverEvent.proverEvent, evt);
-			}
-			// const channelID: string = languageUtils.desc2id(this.formula);
-			// const evt: CliGatewayQuit = { type: "pvs.event.quit", channelID };
-			// this.pvsLanguageServer.cliGateway.publish(evt);
-		}
-		this.connection?.sendRequest(serverEvent.serverModeUpdateEvent, { mode: "lisp" });
-		return res;
+	// const inchecker: boolean = await this.inChecker();
+	// if (this.formula && inchecker) {
+	res = await this.pvsProxy.proofCommand({ proofId: opt.proofId, cmd: "(quit)"});
+	// reset dirty flag --- the proof is over
+	this.updateDirtyFlag(false);
+	//}
+	if (this.autorunFlag) {
+	    const status: ProofStatus = (this.root) ? this.root.getProofStatus() : "untried";
+	    this.autorunFlag = false;
+	    this.autorunCallback(status);
 	}
+	if (opt.notifyClient) {
+	    const req: PvsProofCommand = {
+		...this.formula,
+		cmd: "quit"
+	    };
+	    const ans: ProofCommandResponse = { res: "bye!", req };
+	    this.connection?.sendRequest(serverEvent.proofCommandResponse, ans);
+
+	    if (!this.autorunFlag) {
+		const evt: ProofExecDidQuitProof = { action: "did-quit-proof" };
+		this.connection?.sendNotification(serverEvent.proverEvent, evt);
+	    }
+	    // const channelID: string = languageUtils.desc2id(this.formula);
+	    // const evt: CliGatewayQuit = { type: "pvs.event.quit", channelID };
+	    // this.pvsLanguageServer.cliGateway.publish(evt);
+	}
+	this.connection?.sendRequest(serverEvent.serverModeUpdateEvent, { mode: "lisp" });
+    }
 
 	/**
 	 * Utility function, interrupts a proof command
@@ -2534,34 +2502,34 @@ export class PvsProofExplorer {
 	 * Utility function, shows help for a given command
 	 */
 	async helpCommand (cmd: string): Promise<void> {
-		await this.pvsProxy.showHelpBang(cmd);
+	    await this.pvsProxy.showHelpBang({cmd: cmd});
 	}
 
 	/**
 	 * Send proof command
 	 * @param args Handler arguments: filename, file extension, context folder, theory name, formula name, prover command
 	 */
-	async proofCommand (args: PvsProofCommand): Promise<PvsResponse | null> {
-		if (args?.cmd) {
-			args = fsUtils.decodeURIComponents(args);
-			// const timeout: number = (this.connection) ? await this.connection.workspace.getConfiguration("pvs.pvsProver.watchdog") : 0;
-			const useLispInterface: boolean = true;//!!(this.connection && await this.connection.workspace.getConfiguration("pvs.xperimental.developer.lispInterface"));
+	// async proofCommand (args: PvsProofCommand): Promise<PvsResponse | null> {
+	// 	if (args?.cmd) {
+	// 		args = fsUtils.decodeURIComponents(args);
+	// 		// const timeout: number = (this.connection) ? await this.connection.workspace.getConfiguration("pvs.pvsProver.watchdog") : 0;
+	// 		const useLispInterface: boolean = true;//!!(this.connection && await this.connection.workspace.getConfiguration("pvs.xperimental.developer.lispInterface"));
 
-			const start: number = new Date().getTime();
+	// 		const start: number = new Date().getTime();
 
-			const response: PvsResponse = await this.pvsProxy.proofCommand({ cmd: args.cmd }, { useLispInterface });
+	// 		const response: PvsResponse = await this.pvsProxy.proofCommand({ cmd: args.cmd }, { useLispInterface });
 
-			const ms: number = new Date().getTime() - start;
-			if (this.connection) {
-				this.connection.sendNotification(serverEvent.profilerData, `${ms}ms ${args.cmd}`);
-			}
+	// 		const ms: number = new Date().getTime() - start;
+	// 		if (this.connection) {
+	// 			this.connection.sendNotification(serverEvent.profilerData, `${ms}ms ${args.cmd}`);
+	// 		}
 
-			return response;
-		} else {
-			console.error('[pvs-language-server] Error: proofCommand invoked with null descriptor');
-		}
-		return null;
-	}
+	// 		return response;
+	// 	} else {
+	// 		console.error('[pvs-language-server] Error: proofCommand invoked with null descriptor');
+	// 	}
+	// 	return null;
+	// }
 	// this handler is for commands entered by the user at the prover terminal
 	// ATTN: request.cmd must be a string surrounded by round parentheses.
 	async proofCommandRequest (request: PvsProofCommand): Promise<void> {
@@ -2607,10 +2575,7 @@ export class PvsProofExplorer {
 			// this.pvsLanguageServer.cliGateway.publish(evt);
 			
 			if (this.connection) {
-				if (!this.qedNotificationSent) {
-					this.connection.sendRequest(serverEvent.QED, { response: { result: "Q.E.D." }, request });
-					this.qedNotificationSent = true;
-				}
+				this.connection.sendRequest(serverEvent.QED, { response: { result: request.cmd }, args: request });
 				this.connection.sendRequest(serverEvent.serverModeUpdateEvent, { mode: "lisp" });
 			}
 			// trigger a context update, so proof status will be updated on the front-end
@@ -2636,7 +2601,6 @@ export class PvsProofExplorer {
 					contextFolder: request.contextFolder,
 					theoryName: request.theoryName,
 					formulaName: request.formulaName,
-					line: request.line,
 					cmd
 				};
 				const response: PvsResponse = await this.step({ cmd }); // await this.proofCommand(req); //
@@ -2674,10 +2638,7 @@ export class PvsProofExplorer {
 								// check if the proof is complete
 								if (languageUtils.QED(sequent)) {
 									if (this.connection) {
-										if (!this.qedNotificationSent) {
-											this.connection.sendRequest(serverEvent.QED, { response: { result: sequent }, request: req });
-											this.qedNotificationSent = true;
-										}
+										this.connection.sendRequest(serverEvent.QED, { response: { result: sequent }, args: req });
 										// this.connection.sendRequest(serverEvent.proofCommandResponse, { res: null, req: request });
 										// trigger a context update, so proof status will be updated on the front-end
 										const cdesc: PvsContextDescriptor = await this.pvsLanguageServer.getContextDescriptor({ contextFolder: req.contextFolder });
@@ -3595,29 +3556,14 @@ class RootNode extends ProofItem {
 			super.pending();
 		}
 	}
-	/**
-	 * Sets the root status to QED
-	 */
 	QED (): void {
 		super.treeVisited();
 		super.treeComplete();
 		this.setProofStatus(QED);
 	}
-	/**
-	 * Returns true if the root is QED
-	 */
-	isQED (): boolean {
-		return this.proofStatus === QED;
-	}
-	/**
-	 * Returns true if the proof status has changed
-	 */
 	proofStatusChanged (): boolean {
 		return this.initialProofStatus !== this.proofStatus;
 	}
-	/**
-	 * Sets the proof status of the root
-	 */
 	setProofStatus (proofStatus: ProofStatus): void {
 		if (proofStatus) {
 			this.proofStatus = proofStatus;
